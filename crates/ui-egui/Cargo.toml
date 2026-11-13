@@ -41,6 +41,10 @@ sys-locale = "0.3.2"
 # The system menu bar (a safe API over AppKit); MIT OR Apache-2.0.
 muda = { version = "0.21.2", default-features = false }
 
+[target.'cfg(target_os = "windows")'.dependencies]
+# Validate installed fonts with the same parser used by egui before registering them.
+read-fonts = "0.41"
+
 [dev-dependencies]
 craft-anything-testkit = { workspace = true }
 egui_kittest = { workspace = true, features = ["wgpu", "snapshot", "eframe"] }

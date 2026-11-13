@@ -1203,7 +1203,7 @@ Owner: maintainers · Status: in progress
 ### R2.9 Everyday use: typing, projects, settings
 Owner: maintainers · Status: in progress
 Gaps found while using the app for real projects.
-- [ ] Windows source builds without craft-fonts show Chinese text as boxes. Load a validated,
+- [x] Windows source builds without craft-fonts show Chinese text as boxes. Load a validated,
       bounded system-font fallback on a worker thread for every UI font family.
       — claimed: Codex, branch bugfix/r2.9-windows-cjk-fallback
 - [x] Each project chooses, per kind of action, what the builder's approvals get (allow, ask or
