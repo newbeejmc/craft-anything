@@ -499,6 +499,11 @@ merge state. Without CI, run its steps locally with `--locked`; a Mac can compil
 systems with `cargo check --target`, with zig as the C compiler for `ring` (a wrapper that drops the
 `--target=` flag `cc` adds), but that only proves it compiles.
 
+**Chinese boxes mistaken for broken encoding.** A valid UTF-8 checkout can still show boxes
+when a source build embeds no CJK fonts. Check the file bytes and font table before transcoding
+anything. Verify glyph coverage in every text family with the package's font test and snapshot
+example; Cargo preserves the native-library and LTO settings that ad-hoc linking can miss.
+
 **A "required" switch read only on the failure path.** The build script looked at
 `CRAFT_FONTS_REQUIRED` only when `CRAFT_FONTS_DIR` was set and bad; with the folder variable
 missing, a build told the fonts were required finished with none embedded, and Korean showed as

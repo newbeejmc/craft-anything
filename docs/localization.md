@@ -175,5 +175,11 @@ already include. Local builds must set `CRAFT_FONTS_DIR` to a craft-fonts checko
 before compiling to get the same glyph coverage; with `CRAFT_FONTS_REQUIRED=1` set as well, a
 build that would leave the fonts out (no `CRAFT_FONTS_DIR`, or a bad one) fails instead of
 quietly showing boxes. The catalogs add no font assets.
+On Windows, a source build without craft-fonts also tries installed CJK fonts, starting with
+Microsoft YaHei. A worker reads at most 32 MiB per candidate and checks the font tables before
+adding a fallback to body, code, medium and semibold text. These system fonts stay on the
+computer; they are not embedded or redistributed. Missing or invalid files are skipped.
+This fixes missing Chinese glyphs without changing the UTF-8 catalogs. Other scripts still
+need the craft-fonts bundle for the coverage described above.
 Check each script, clipping, narrow windows and native file dialogs visually
 on each platform; catalog coverage alone does not verify layout or fonts.

@@ -39,6 +39,8 @@ pub mod settings_ui;
 pub mod sidebar;
 pub mod slash;
 pub mod state;
+#[cfg(target_os = "windows")]
+mod system_fonts;
 pub mod theme;
 pub mod titlebar;
 pub mod usage;
