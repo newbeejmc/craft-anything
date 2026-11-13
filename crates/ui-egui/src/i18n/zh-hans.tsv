@@ -827,6 +827,7 @@ Paste your {name} key	粘贴你的 {name} 密钥
 Path	路径
 Pause	暂停
 Pausing…	正在暂停…
+Stopping…	正在停止…
 Pause the build first, then delete the project.	请先暂停构建，再删除项目。
 Pause the build first.	请先暂停构建。
 Paused	已暂停

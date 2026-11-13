@@ -822,6 +822,7 @@ Paste your {name} key	Вставьте ключ {name}
 Path	Путь
 Pause	Пауза
 Pausing…	Приостановка…
+Stopping…	Остановка…
 Pause the build first, then delete the project.	Сначала приостановите сборку, затем удалите проект.
 Pause the build first.	Сначала приостановите сборку.
 Paused	Приостановлено

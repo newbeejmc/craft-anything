@@ -679,6 +679,8 @@ pub struct AcpConversation {
     resume: Option<String>,
     shared: Arc<Mutex<Option<Shared>>>,
     proc: Option<RunningProcess>,
+    /// Stop ends the owned process; it never waits for a protocol acknowledgement.
+    stopping: bool,
     tx: Sender<AgentEvent>,
     rx: Receiver<AgentEvent>,
     busy: Arc<AtomicBool>,
@@ -826,6 +828,7 @@ impl AcpConversation {
             resume,
             shared: Arc::default(),
             proc: None,
+            stopping: false,
             tx,
             rx,
             busy: Arc::default(),
@@ -860,7 +863,9 @@ impl AcpConversation {
         if self.approver.is_some() {
             core = core.deciding();
         }
-        *self.lock() = Some(Shared { core, stdin: None, stderr: VecDeque::new(), approver: self.approver.clone() });
+        // A pending approval callback belongs to this process, never the next one started
+        // after Stop. Give each process its own protocol state.
+        self.shared = Arc::new(Mutex::new(Some(Shared { core, stdin: None, stderr: VecDeque::new(), approver: self.approver.clone() })));
         let (shared, tx, busy) = (self.shared.clone(), self.tx.clone(), self.busy.clone());
         let shared_err = self.shared.clone();
         let tx_err = tx.clone();
@@ -918,7 +923,7 @@ impl AcpConversation {
         }
     }
     fn send_prompt(&mut self, text: &str, retry: bool) {
-        if self.busy.swap(true, Ordering::SeqCst) {
+        if self.stopping || self.busy.swap(true, Ordering::SeqCst) {
             let _ = self.tx.send(AgentEvent::Error {
                 message: "Still working on the last message.".into(),
                 remediation: Some("Wait for it to finish or press stop.".into()),
@@ -975,6 +980,20 @@ impl Conversation for AcpConversation {
 
     fn poll(&mut self) -> Vec<AgentEvent> {
         let mut events: Vec<AgentEvent> = self.rx.try_iter().collect();
+        if self.stopping {
+            // A late protocol response cannot free the turn while its process is still alive.
+            events.retain(|event| !matches!(event, AgentEvent::TurnDone { .. }));
+            if self.proc.as_mut().is_none_or(RunningProcess::is_finished) {
+                events.extend(self.rx.try_iter());
+                events.retain(|event| !matches!(event, AgentEvent::TurnDone { .. }));
+                self.stopping = false;
+                self.busy.store(false, Ordering::SeqCst);
+                self.failure = None;
+                events.push(AgentEvent::Status { text: "Stopped.".into() });
+                events.push(super::nothing_done(&self.backend));
+            }
+            return events;
+        }
         // An agent that exits mid-message would otherwise leave the conversation busy forever.
         if self.busy.load(Ordering::SeqCst) && self.proc.as_mut().is_some_and(RunningProcess::is_finished) {
             self.busy.store(false, Ordering::SeqCst);
@@ -1014,11 +1033,19 @@ impl Conversation for AcpConversation {
     }
 
     fn stop(&mut self) {
-        self.with_core(AcpCore::cancel);
+        if !self.is_busy() || self.stopping {
+            return;
+        }
+        self.stopping = true;
+        // This is non-blocking and kills the agent's whole owned process group, including
+        // tools it started. A session/cancel notification alone can be ignored indefinitely.
+        if let Some(process) = self.proc.as_ref() {
+            process.kill();
+        }
     }
 
     fn is_busy(&self) -> bool {
-        self.busy.load(Ordering::SeqCst)
+        self.stopping || self.busy.load(Ordering::SeqCst)
     }
 }
 
@@ -1033,6 +1060,79 @@ impl Drop for AcpConversation {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    #[ignore = "owned subprocess fixture for cancellation tests"]
+    fn unresponsive_agent_fixture() {
+        use std::io::BufRead;
+        for line in std::io::stdin().lock().lines() {
+            let Ok(line) = line else { break };
+            let Ok(request) = serde_json::from_str::<Value>(&line) else { continue };
+            let result = match request.get("method").and_then(Value::as_str) {
+                Some("initialize") => json!({"protocolVersion": 1, "agentCapabilities": {"loadSession": true}}),
+                Some("session/new" | "session/load") => json!({"sessionId": "stop-test-session"}),
+                Some("session/prompt") => {
+                    println!(
+                        "{}",
+                        json!({"jsonrpc": "2.0", "method": "session/update", "params": {
+                        "sessionId": "stop-test-session", "update": {"sessionUpdate": "agent_message_chunk",
+                        "content": {"type": "text", "text": "fixture ready"}}}})
+                    );
+                    let _ = std::io::stdout().flush();
+                    if !request.to_string().contains("next message") {
+                        continue;
+                    }
+                    json!({"stopReason": "end_turn"})
+                }
+                // Deliberately ignore session/cancel, as a hung or uncooperative agent can.
+                _ => continue,
+            };
+            println!("{}", json!({"jsonrpc": "2.0", "id": request["id"], "result": result}));
+            let _ = std::io::stdout().flush();
+        }
+    }
+
+    fn pump(conversation: &mut AcpConversation, mut done: impl FnMut(&[AgentEvent]) -> bool) -> bool {
+        let deadline = Instant::now() + Duration::from_secs(2);
+        loop {
+            if done(&conversation.poll()) {
+                return true;
+            }
+            if Instant::now() >= deadline {
+                return false;
+            }
+            std::thread::sleep(Duration::from_millis(5));
+        }
+    }
+
+    #[test]
+    fn stop_ends_an_agent_that_ignores_cancellation_and_can_resume() {
+        let directory = tempfile::tempdir().unwrap();
+        let executable = std::env::current_exe().unwrap();
+        let mcp = McpCommand { command: "not-started".into(), args: Vec::new(), notes: None };
+        let args = ["--ignored", "--exact", "cli_agents::acp::tests::unresponsive_agent_fixture", "--nocapture", "--format=terse"].map(str::to_string).to_vec();
+        let mut conversation = AcpConversation::new("Test", "gemini-cli", executable.display().to_string(), args, directory.path().to_owned(), mcp, None);
+        conversation.send("a long task");
+        assert!(pump(&mut conversation, |events| events.iter().any(|e| matches!(e, AgentEvent::TextDelta { text } if text == "fixture ready"))));
+        conversation.stop();
+        conversation.stop();
+        let mut terminal = 0;
+        let mut errors = Vec::new();
+        let finished = pump(&mut conversation, |events| {
+            terminal += events.iter().filter(|event| matches!(event, AgentEvent::TurnDone { .. })).count();
+            errors.extend(events.iter().filter(|event| matches!(event, AgentEvent::Error { .. })).cloned());
+            terminal > 0
+        });
+        assert!(finished && !conversation.is_busy(), "Stop must not depend on the agent acknowledging cancellation");
+        assert!(conversation.proc.as_mut().is_some_and(RunningProcess::is_finished), "the owned process has ended");
+        assert_eq!(terminal, 1);
+        assert!(errors.is_empty(), "a requested stop is not an agent crash: {errors:?}");
+        assert_eq!(conversation.session_id().as_deref(), Some("stop-test-session"));
+        assert!(!conversation.poll().iter().any(|event| matches!(event, AgentEvent::TurnDone { .. })), "Stop is idempotent");
+        conversation.send("next message");
+        assert!(pump(&mut conversation, |events| events.iter().any(|event| matches!(event, AgentEvent::TurnDone { .. }))));
+        assert!(!conversation.is_busy(), "the stopped session accepts a new turn");
+    }
 
     #[test]
     fn copilot_uses_stdio_acp() {

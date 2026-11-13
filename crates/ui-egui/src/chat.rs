@@ -82,6 +82,21 @@ pub fn apply_event(chat: &mut Vec<ChatItem>, e: AgentEvent) {
     }
 }
 
+/// Pending actions in a stopped turn cannot keep spinning or accept a late approval.
+pub(crate) fn finish_stopped(chat: &mut [ChatItem]) {
+    for item in chat.iter_mut().rev() {
+        match item {
+            ChatItem::User(_) => break,
+            ChatItem::Tool { ok, summary, .. } if ok.is_none() => {
+                *ok = Some(false);
+                *summary = tr("Stopped here");
+            }
+            ChatItem::Consent { answer, .. } if answer.is_none() => *answer = Some(ConsentAnswer::Deny),
+            _ => {}
+        }
+    }
+}
+
 fn end_streaming(chat: &mut [ChatItem]) {
     if let Some(ChatItem::Assistant { streaming, .. }) = chat.last_mut() {
         *streaming = false;
@@ -341,7 +356,7 @@ fn composer(app: &mut CraftApp, ui: &mut Ui, width: f32, dense: bool) {
                 attach: None,
                 previews: &[],
                 stop_button: answering.then_some("Stop"),
-                stopping: false,
+                stopping: app.chat_stopping,
                 send: !answering,
                 recall: false,
                 history: Some(&history),
@@ -760,6 +775,27 @@ mod tests {
         }
         assert!(matches!(&chat[2], ChatItem::Tool { ok: Some(true), evidence_id: Some(_), .. }));
         assert!(matches!(&chat[3], ChatItem::Consent { answer: None, .. }));
+    }
+
+    #[test]
+    fn stopped_turn_finishes_only_its_pending_actions() {
+        let tool = |id: &str| AgentEvent::ToolStarted { call_id: id.into(), tool: "run".into(), input: Value::Null };
+        let consent = |id: &str| AgentEvent::ConsentNeeded { call_id: id.into(), tool: "run".into(), title: "Run it".into(), explanation: "runs".into() };
+        let mut chat = vec![ChatItem::User("earlier turn".into())];
+        apply_event(&mut chat, tool("earlier"));
+        chat.push(ChatItem::User("current turn".into()));
+        apply_event(&mut chat, tool("done"));
+        apply_event(
+            &mut chat,
+            AgentEvent::ToolFinished { call_id: "done".into(), tool: "run".into(), ok: true, summary: "completed".into(), evidence_id: None },
+        );
+        apply_event(&mut chat, tool("pending"));
+        apply_event(&mut chat, consent("approval"));
+        finish_stopped(&mut chat);
+        assert!(matches!(&chat[1], ChatItem::Tool { ok: None, .. }), "earlier turns stay intact");
+        assert!(matches!(&chat[3], ChatItem::Tool { ok: Some(true), summary, .. } if summary == "completed"));
+        assert!(matches!(&chat[4], ChatItem::Tool { ok: Some(false), summary, .. } if summary == &tr("Stopped here")));
+        assert!(matches!(&chat[5], ChatItem::Consent { answer: Some(ConsentAnswer::Deny), .. }));
     }
 
     #[test]

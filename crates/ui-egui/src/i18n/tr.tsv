@@ -827,6 +827,7 @@ Paste your {name} key	{name} anahtarınızı yapıştırın
 Path	Yol
 Pause	Duraklat
 Pausing…	Duraklatılıyor…
+Stopping…	Durduruluyor…
 Pause the build first, then delete the project.	Önce derlemeyi duraklatın, sonra projeyi silin.
 Pause the build first.	Önce derlemeyi duraklatın.
 Paused	Duraklatıldı

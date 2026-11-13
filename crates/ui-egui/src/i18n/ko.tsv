@@ -827,6 +827,7 @@ Paste your {name} key	{name} 키 붙여넣기
 Path	경로
 Pause	일시 정지
 Pausing…	일시 정지 중…
+Stopping…	중지하는 중…
 Pause the build first, then delete the project.	먼저 빌드를 일시 정지한 뒤 프로젝트를 삭제하세요.
 Pause the build first.	먼저 빌드를 일시 정지하세요.
 Paused	일시 정지됨

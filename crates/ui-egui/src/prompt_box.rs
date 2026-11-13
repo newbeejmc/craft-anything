@@ -272,7 +272,13 @@ pub fn show(ui: &mut Ui, text: &mut String, attachments: &[PathBuf], b: PromptBo
                     }
                     // Named, not a bare icon: the hint says "press Pause", so the button says Pause.
                     if let Some(name) = b.stop_button {
-                        let label = if b.stopping { "Pausing…" } else { name };
+                        let label = if !b.stopping {
+                            name
+                        } else if name == "Pause" {
+                            "Pausing…"
+                        } else {
+                            "Stopping…"
+                        };
                         if widgets::secondary(ui, Some("circle-stop"), label).clicked() && !b.stopping {
                             out.stop = true;
                         }

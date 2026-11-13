@@ -245,6 +245,21 @@ the program it opened stayed open (and held the shell's pipe, so the command nev
 the caller may exit next, use `kill_and_wait`, and check after a live run that nothing was left
 running.
 
+**Stop queued behind a session lock.** A shared chat worker waited for the engine session while
+refreshing a tool result, so its queued Stop could not reach the running agent. Preparation and
+refresh must yield when the session is busy, and terminal events must not wait for that refresh.
+An ACP cancellation notification is also only a request: an unresponsive agent may never
+acknowledge it. Stop the owned process, report completion only after it ends, and keep callbacks
+from that process separate from the next session.
+
+**Stop cannot wait for another response chunk.** Checking cancellation only inside an SSE
+callback leaves a silent server's first-byte wait, partial event or TLS handshake blocked.
+Close the actual socket when stopped, keep DNS/connect waits cancellable, and normalize the
+result as cancellation before applying network-error retries. Reset Stop before enqueueing a
+new message, never on its worker: a fast click can otherwise be erased before the request runs.
+Do not use `io::ErrorKind::Interrupted` for requested cancellation: buffered I/O and TLS may
+retry it forever. Use a final connection error and check Stop before classifying the failure.
+
 **A turn's own process outlived its answer.** `run_cli` only sent `AgentEvent::TurnDone` once the
 whole coding-agent subprocess exited, never once its JSON stream said the turn was done (the
 `result` line). Claude Code can print that line and then linger (its own shutdown hook, logging)

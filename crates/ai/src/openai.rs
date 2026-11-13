@@ -257,15 +257,18 @@ impl OpenAi {
     }
 
     fn stream_once(&self, req: &TurnRequest<'_>, on_delta: &mut dyn FnMut(Delta), stop: &Stop) -> Result<TurnResult, ToolError> {
-        let agent = http::stream_agent(self.stream_limit);
-        let reader = http::post_json(&agent, &self.label, &self.url("chat/completions"), &self.headers(), &self.body(req))?;
+        let agent = http::stream_agent_with_stop(self.stream_limit, stop)?;
+        let response = http::post_json(&agent, &self.label, &self.url("chat/completions"), &self.headers(), &self.body(req));
+        stop.check()?;
+        let reader = response?;
         let mut st = ChatStream::default();
-        http::parse_sse(reader, |ev| {
+        let parsed = http::parse_sse(reader, |ev| {
             stop.check()?;
             st.apply(&ev, on_delta)?;
             Ok(!st.done)
-        })?;
+        });
         stop.check()?;
+        parsed?;
         let mut r = st.finish(&self.model)?;
         if self.react || self.auto_react {
             react_postprocess(&mut r, req.tools, self.react);

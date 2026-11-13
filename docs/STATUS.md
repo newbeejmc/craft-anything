@@ -6,6 +6,27 @@ workspace clippy, layers, fmt and the secret scan of all history were clean. Chi
 
 ## What works, and how it was checked
 
+### Responsive agent stopping (R2.9)
+
+Shared CLI-agent conversations keep accepting Stop while investigation preparation or
+refresh waits for the engine session. Terminal events are delivered before deferred refresh.
+CLI startup flag probes observe cancellation; ACP Stop ends the owned process group rather
+than depending on an agent acknowledging `session/cancel`. Agents supporting saved sessions
+can resume on the next message, with approval callbacks isolated from the restarted process.
+API-model cancellation closes the real HTTP/TLS connection, including a quiet first-byte
+wait or partial SSE event. DNS and TCP connection waits observe Stop without sending a
+cancelled HTTP request. Stop resets before enqueueing, never after the worker starts.
+The Ask composer acknowledges Stop immediately and closes unfinished tool and approval
+cards when the turn ends, preserving completed work and the draft. Regression fixtures cover
+session-lock contention, an unresponsive ACP child, session resume, startup probes and UI state.
+API regressions use local OpenAI-compatible and Anthropic fixtures and check that the server
+observes a disconnect and the next turn succeeds. They do not claim an authenticated live-provider run.
+Windows verification with Rust 1.97: 807 AI/GUI unit, integration and smoke tests passed,
+with five existing ignored checks; 14 focused Stop regressions passed separately. The CLI
+and release desktop app built successfully. All-target clippy with warnings denied, fmt,
+layers, locks, translation coverage and staged secrets passed. The new desktop binary has
+not been checked through native-window interaction.
+
 ### Local Codex discovery and sign-in (R2.2)
 
 macOS Dock launches can find an executable Codex CLI bundled with ChatGPT.app or
