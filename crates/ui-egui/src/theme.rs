@@ -219,7 +219,8 @@ pub struct CraftFont {
 include!(concat!(env!("OUT_DIR"), "/craft_fonts.rs"));
 
 /// Install DM Sans (three weights: body, labels and bold for headings; it has no static
-/// SemiBold), JetBrains Mono (code), plus any craft-fonts as fallbacks.
+/// SemiBold), JetBrains Mono (code), plus any craft-fonts as fallbacks. Windows source builds
+/// without that bundle load an installed CJK fallback on a worker thread.
 pub fn install_fonts(ctx: &egui::Context) {
     let mut fonts = FontDefinitions::default();
     let mut add = |name: &str, bytes: &'static [u8]| {
@@ -249,6 +250,12 @@ pub fn install_fonts(ctx: &egui::Context) {
         let mut stack = vec![primary.to_owned()];
         stack.extend(base.iter().cloned());
         fonts.families.insert(FontFamily::Name(fam.into()), stack);
+    }
+    #[cfg(target_os = "windows")]
+    if CRAFT_FONTS.is_empty() {
+        ctx.set_fonts(fonts.clone());
+        crate::system_fonts::install(ctx, fonts);
+        return;
     }
     ctx.set_fonts(fonts);
 }

@@ -4,6 +4,7 @@ use craft_anything_evidence::{ErrorCode, ToolError};
 use serde_json::Value;
 use std::io::{BufRead, BufReader, Read};
 use std::time::Duration;
+mod cancel;
 
 /// Generic, non-identifying User-Agent.
 pub const USER_AGENT: &str = "CraftAnything-dev";
@@ -31,6 +32,19 @@ pub const STREAM_FIRST_BYTE: Duration = Duration::from_secs(300);
 /// on a shared server gets no bytes until its turn (#1239). Without one, the defaults apply.
 pub fn stream_agent(limit: Option<Duration>) -> ureq::Agent {
     agent(Duration::from_secs(15), limit.unwrap_or(STREAM_FIRST_BYTE), limit.unwrap_or(STREAM_BODY))
+}
+
+/// A streamed model request whose live socket closes when its conversation stops.
+pub(crate) fn stream_agent_with_stop(limit: Option<Duration>, stop: &crate::model::Stop) -> Result<ureq::Agent, ToolError> {
+    let config = ureq::Agent::config_builder()
+        .http_status_as_error(false)
+        .user_agent(USER_AGENT)
+        .timeout_resolve(Some(Duration::from_secs(15)))
+        .timeout_connect(Some(Duration::from_secs(15)))
+        .timeout_recv_response(Some(limit.unwrap_or(STREAM_FIRST_BYTE)))
+        .timeout_recv_body(Some(limit.unwrap_or(STREAM_BODY)))
+        .build();
+    cancel::agent(config, stop)
 }
 
 /// Whether a request's error says the server took it and didn't answer in time: its address is

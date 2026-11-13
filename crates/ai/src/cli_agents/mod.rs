@@ -381,10 +381,18 @@ fn access_for(builder: bool, deep: bool, question: bool) -> Access {
 /// Whether `program`'s help mentions every required flag (10 s limit, stdin closed); `None` when
 /// the help couldn't be read (the program is missing, or too slow).
 pub fn verify_flags(program: &str, help_args: &[&str], needed: &[&str]) -> Option<bool> {
+    verify_flags_with_stop(program, help_args, needed, &Stop::default())
+}
+
+fn verify_flags_with_stop(program: &str, help_args: &[&str], needed: &[&str], stop: &Stop) -> Option<bool> {
+    if stop.is_stopped() {
+        return None;
+    }
     if needed.is_empty() {
         return Some(true);
     }
-    match Process::new(program).args(help_args).timeout(Duration::from_secs(10)).stdout_cap(256 * 1024).run() {
+    let stop = stop.clone();
+    match Process::new(program).args(help_args).timeout(Duration::from_secs(10)).stdout_cap(256 * 1024).cancel_when(move || stop.is_stopped()).run() {
         Ok(out) => {
             let text = format!("{}{}", out.stdout_text(), out.stderr_text());
             if needed.iter().all(|f| text.contains(f)) {
@@ -923,6 +931,15 @@ fn run_cli(spec: &CliSpec, text: &str, retry: bool, tx: &Sender<AgentEvent>, sto
     let RunState { session, verified, lost, failure } = state;
     let name = spec.config.name.clone();
     let agent = spec.config.model.clone();
+    let cancelled = || {
+        stop.is_stopped().then(|| {
+            let _ = tx.send(AgentEvent::Status { text: "Stopped.".into() });
+            nothing_done(&name)
+        })
+    };
+    if let Some(done) = cancelled() {
+        return done;
+    }
     let program = match program_of(&spec.config, &spec.options) {
         Ok(program) => program,
         Err(e) => {
@@ -975,11 +992,14 @@ fn run_cli(spec: &CliSpec, text: &str, retry: bool, tx: &Sender<AgentEvent>, sto
                 // a program updated in place is seen.
                 let mut v = verified.lock().unwrap_or_else(PoisonError::into_inner);
                 if *v != Some(true) {
-                    *v = verify_flags(&program, help, needed);
+                    *v = verify_flags_with_stop(&program, help, needed, stop);
                 }
                 *v
             }
         };
+        if let Some(done) = cancelled() {
+            return done;
+        }
         let ok = checked == Some(true);
         if !ok && adapter.plain_fallback() {
             let _ = tx.send(AgentEvent::Status {
@@ -1129,6 +1149,9 @@ fn run_cli(spec: &CliSpec, text: &str, retry: bool, tx: &Sender<AgentEvent>, sto
     }
     if adapter.prompt_on_stdin() {
         proc = proc.stdin_bytes(adapter.stdin_text(&preamble, text));
+    }
+    if let Some(done) = cancelled() {
+        return done;
     }
     let result = proc.run();
     let p = parser.lock().unwrap_or_else(PoisonError::into_inner);
@@ -1386,6 +1409,33 @@ impl Drop for CliConversation {
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    #[ignore = "owned subprocess fixture for startup cancellation tests"]
+    fn slow_help_fixture() {
+        std::thread::sleep(std::time::Duration::from_secs(30));
+    }
+
+    #[test]
+    fn stop_interrupts_required_flags_preflight() {
+        let executable = std::env::current_exe().unwrap();
+        let stop = super::Stop::default();
+        let request = stop.clone();
+        let cancel = std::thread::spawn(move || {
+            std::thread::sleep(std::time::Duration::from_millis(150));
+            request.stop();
+        });
+        let started = std::time::Instant::now();
+        let result = super::verify_flags_with_stop(
+            &executable.display().to_string(),
+            &["--ignored", "--exact", "cli_agents::tests::slow_help_fixture", "--nocapture"],
+            &["--required"],
+            &stop,
+        );
+        cancel.join().unwrap();
+        assert_eq!(result, None);
+        assert!(started.elapsed() < std::time::Duration::from_secs(2), "Stop must interrupt the help probe before its ten-second timeout");
+    }
+
     use super::*;
 
     /// #721: Codex's desktop app keeps its CLI in `bin/<build>/codex.exe` and moves it on every
@@ -2763,7 +2813,10 @@ echo '{"type":"turn.completed","usage":{"input_tokens":1,"output_tokens":1}}'
             assert!(!events.iter().any(|e| matches!(e, AgentEvent::Error { .. })), "{events:?}");
             assert!(events.iter().any(|e| matches!(e, AgentEvent::TextDelta { text } if text.contains("DSH_STDIN_FIXTURE_OK"))), "{events:?}");
             assert_eq!(std::fs::read(dir.path().join("stdin")).unwrap(), format!("{preamble}{prompt}").as_bytes());
-            let argv = std::fs::read_to_string(dir.path().join("argv")).unwrap();
+            // cmd.exe echoes filenames in the active Windows code page; flags are ASCII.
+            // The task's exact UTF-8 bytes are checked separately above.
+            let argv_bytes = std::fs::read(dir.path().join("argv")).unwrap();
+            let argv = String::from_utf8_lossy(&argv_bytes);
             assert!(argv.starts_with("--profile headless --patch "), "{argv}");
             assert!(!argv.trim_end().ends_with(" -"), "old Harness versions would run a literal dash: {argv}");
             assert!(!argv.contains(&prompt), "task text must not appear in argv");

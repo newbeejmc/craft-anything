@@ -1,10 +1,31 @@
 # Status
 
 What works today and how it was checked. The plan, owners and order of work are in
-[ROADMAP.md](ROADMAP.md). Last updated 2026-11-09. The baseline audit on 2026-10-23 from `main` had 923 tests passing;
+[ROADMAP.md](ROADMAP.md). Last updated 2026-11-13. The baseline audit on 2026-10-23 from `main` had 923 tests passing;
 workspace clippy, layers, fmt and the secret scan of all history were clean. Chinese UI checks are listed separately below.
 
 ## What works, and how it was checked
+
+### Responsive agent stopping (R2.9)
+
+Shared CLI-agent conversations keep accepting Stop while investigation preparation or
+refresh waits for the engine session. Terminal events are delivered before deferred refresh.
+CLI startup flag probes observe cancellation; ACP Stop ends the owned process group rather
+than depending on an agent acknowledging `session/cancel`. Agents supporting saved sessions
+can resume on the next message, with approval callbacks isolated from the restarted process.
+API-model cancellation closes the real HTTP/TLS connection, including a quiet first-byte
+wait or partial SSE event. DNS and TCP connection waits observe Stop without sending a
+cancelled HTTP request. Stop resets before enqueueing, never after the worker starts.
+The Ask composer acknowledges Stop immediately and closes unfinished tool and approval
+cards when the turn ends, preserving completed work and the draft. Regression fixtures cover
+session-lock contention, an unresponsive ACP child, session resume, startup probes and UI state.
+API regressions use local OpenAI-compatible and Anthropic fixtures and check that the server
+observes a disconnect and the next turn succeeds. They do not claim an authenticated live-provider run.
+Windows verification with Rust 1.97: 807 AI/GUI unit, integration and smoke tests passed,
+with five existing ignored checks; 14 focused Stop regressions passed separately. The CLI
+and release desktop app built successfully. All-target clippy with warnings denied, fmt,
+layers, locks, translation coverage and staged secrets passed. The new desktop binary has
+not been checked through native-window interaction.
 
 ### Local Codex discovery and sign-in (R2.2)
 
@@ -545,6 +566,22 @@ Plasma on Wayland): the window opens in 3 s on the AMD GPU instead of 18–25 s 
 desktop no longer lags; `WGPU_POWER_PREF=high`, `WGPU_ADAPTER_NAME=nvidia` and `DRI_PRIME=1` with
 `WGPU_POWER_PREF=none` still draw on NVIDIA. Desktops with monitors on one or two GPUs and Intel
 laptops are covered by unit tests on fake `/sys/class/drm` folders only.
+
+### Windows source-build Chinese fonts
+
+Windows source builds without the optional craft-fonts bundle load an installed CJK font
+on a worker thread, starting with Microsoft YaHei. Font reads are capped at 32 MiB and
+validated before adding a fallback to body, code, medium and semibold families. Existing
+primary fonts stay first; no system font is copied into the app or repository. Source
+files remain UTF-8.
+
+Checked on Windows (2026-11-13): the installed-font test renders Simplified and Traditional
+Chinese glyphs in all four families; the GUI suite passes 237 tests with two manual checks
+ignored (the installed-font check was also run explicitly). Bounded reads, invalid-font
+fallback and duplicate-free family registration have regression tests. The desktop release
+build, formatting, all-target GUI clippy with warnings denied, layers, locks and staged
+secret scan pass. The Chinese home screen was rendered and inspected with the headless
+snapshot example; a native desktop window was not manually exercised for this change.
 
 ### Windows renderer fallback
 

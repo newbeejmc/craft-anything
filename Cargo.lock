@@ -1415,6 +1415,7 @@ dependencies = [
  "log",
  "muda",
  "pollster 0.4.0",
+ "read-fonts",
  "rfd",
  "serde",
  "serde_json",

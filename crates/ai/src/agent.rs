@@ -355,13 +355,24 @@ impl AgentLoop {
 
     /// Handle one user message to completion.
     pub fn handle(&mut self, text: &str) {
-        self.handle_turn(Some(text));
+        self.stop.reset();
+        let done = self.handle_turn(Some(text));
+        self.emit(done);
     }
 
     /// A retry has no new user message: keep completed tool calls and their results, then
     /// continue the failed model request using the same history.
-    fn handle_turn(&mut self, text: Option<&str>) {
-        self.stop.reset();
+    fn handle_turn(&mut self, text: Option<&str>) -> AgentEvent {
+        if self.stop.is_stopped() {
+            self.emit(AgentEvent::Status { text: "Stopped.".into() });
+            return AgentEvent::TurnDone {
+                backend: self.chain.get(self.current).map(|slot| slot.name.clone()).unwrap_or_default(),
+                input_tokens: 0,
+                output_tokens: 0,
+                cost_usd: None,
+                cost_is_estimate: false,
+            };
+        }
         let cancel = CancelToken::default();
         *self.cancel.lock().unwrap_or_else(PoisonError::into_inner) = cancel.clone();
         if let Some(text) = text {
@@ -485,13 +496,13 @@ impl AgentLoop {
         }
         self.save_transcript();
         let backend = self.chain.get(self.current).map(|s| s.name.clone()).unwrap_or_default();
-        self.emit(AgentEvent::TurnDone {
+        AgentEvent::TurnDone {
             backend,
             input_tokens: msg_usage.input_tokens.saturating_add(msg_usage.cache_read_tokens).saturating_add(msg_usage.cache_write_tokens),
             output_tokens: msg_usage.output_tokens,
             cost_usd: msg_cost,
             cost_is_estimate: false,
-        });
+        }
     }
 
     /// Pair retained calls left unexecuted by a stop reason before reusing the history.
@@ -873,14 +884,25 @@ impl ApiConversation {
             .spawn(move || {
                 while let Ok(text) = wrx.recv() {
                     let r = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| agent.handle_turn(text.as_deref())));
-                    if r.is_err() {
-                        let _ = etx.send(AgentEvent::Error {
-                            message: "The assistant hit a bug and stopped safely.".into(),
-                            remediation: Some("Start a new chat.".into()),
-                            log: None,
-                        });
-                    }
+                    let done = match r {
+                        Ok(done) => done,
+                        Err(_) => {
+                            let _ = etx.send(AgentEvent::Error {
+                                message: "The assistant hit a bug and stopped safely.".into(),
+                                remediation: Some("Start a new chat.".into()),
+                                log: None,
+                            });
+                            AgentEvent::TurnDone {
+                                backend: agent.chain.get(agent.current).map(|slot| slot.name.clone()).unwrap_or_default(),
+                                input_tokens: 0,
+                                output_tokens: 0,
+                                cost_usd: None,
+                                cost_is_estimate: false,
+                            }
+                        }
+                    };
                     busy2.store(false, Ordering::SeqCst);
+                    let _ = etx.send(done);
                 }
             })
             .map_err(|e| ToolError::internal(format!("couldn't start the AI worker: {e}")))?;
@@ -893,8 +915,12 @@ impl ApiConversation {
     }
 
     fn submit(&mut self, text: Option<String>) {
+        if self.busy.swap(true, Ordering::SeqCst) {
+            return;
+        }
+        // Reset before enqueueing, so an immediate Stop cannot be erased by the worker.
+        self.stop.reset();
         *self.failure.lock().unwrap_or_else(PoisonError::into_inner) = None;
-        self.busy.store(true, Ordering::SeqCst);
         if self.to_worker.send(text).is_err() {
             self.busy.store(false, Ordering::SeqCst);
             self.queued.push(AgentEvent::Error {
@@ -1157,6 +1183,126 @@ pub(crate) mod tests {
             std::thread::sleep(Duration::from_millis(5));
         }
         panic!("timed out: {all:?}");
+    }
+
+    fn api_stop_fixture(partial_event: bool) {
+        use std::io::{BufRead, BufReader, Read, Write};
+        for anthropic in [false, true] {
+            let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+            let base = format!("http://{}", listener.local_addr().unwrap());
+            let (ready, waiting) = std::sync::mpsc::channel();
+            let (closed, disconnected) = std::sync::mpsc::channel();
+            let server = std::thread::spawn(move || {
+                for turn in 0..2 {
+                    let (mut socket, _) = listener.accept().unwrap();
+                    socket.set_read_timeout(Some(Duration::from_secs(3))).unwrap();
+                    let mut request = BufReader::new(&mut socket);
+                    let mut length = 0;
+                    loop {
+                        let mut line = String::new();
+                        assert!(request.read_line(&mut line).unwrap() > 0);
+                        if line == "\r\n" {
+                            break;
+                        }
+                        if let Some((name, value)) = line.split_once(':')
+                            && name.eq_ignore_ascii_case("content-length")
+                        {
+                            length = value.trim().parse::<usize>().unwrap();
+                        }
+                    }
+                    request.read_exact(&mut vec![0; length]).unwrap();
+                    drop(request);
+                    if turn == 0 {
+                        if partial_event {
+                            socket.write_all(b"HTTP/1.1 200 OK\r\nContent-Type: text/event-stream\r\nConnection: close\r\n\r\ndata: {").unwrap();
+                            socket.flush().unwrap();
+                        }
+                        ready.send(()).unwrap();
+                        // A cancelled turn closes its real HTTP connection, rather than just
+                        // hiding the spinner while a request carries on in another thread.
+                        assert_eq!(socket.read(&mut [0; 1]).unwrap(), 0);
+                        closed.send(()).unwrap();
+                    } else {
+                        let body = if anthropic {
+                            "event: message_start\ndata: {\"type\":\"message_start\",\"message\":{\"model\":\"fixture\",\"usage\":{\"input_tokens\":1,\"output_tokens\":0}}}\n\nevent: content_block_start\ndata: {\"type\":\"content_block_start\",\"index\":0,\"content_block\":{\"type\":\"text\",\"text\":\"done\"}}\n\nevent: message_delta\ndata: {\"type\":\"message_delta\",\"delta\":{\"stop_reason\":\"end_turn\"},\"usage\":{\"output_tokens\":1}}\n\nevent: message_stop\ndata: {\"type\":\"message_stop\"}\n\n"
+                        } else {
+                            "data: {\"choices\":[{\"delta\":{\"content\":\"done\"},\"finish_reason\":\"stop\"}]}\n\ndata: [DONE]\n\n"
+                        };
+                        write!(
+                            socket,
+                            "HTTP/1.1 200 OK\r\nContent-Type: text/event-stream\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}",
+                            body.len()
+                        )
+                        .unwrap();
+                    }
+                }
+            });
+            let model: Box<dyn ChatModel> = if anthropic {
+                Box::new(crate::anthropic::Anthropic::new(Some(&base), "sk-test".into(), "fixture"))
+            } else {
+                Box::new(crate::openai::OpenAi::compatible("Fixture", &base, None, "fixture"))
+            };
+            let slot = ModelSlot { name: "Fixture".into(), model, local: true, effort: None, max_turns: 2, context_tokens: 0 };
+            let host = Arc::new(FakeHost { calls: Mutex::default(), journal: Mutex::default() });
+            let mut conversation = ApiConversation::start(host, vec![slot], LoopConfig::default()).unwrap();
+            conversation.send("a request whose server never finishes");
+            waiting.recv_timeout(Duration::from_secs(5)).unwrap();
+            let started = std::time::Instant::now();
+            conversation.stop();
+            conversation.stop();
+            let events = drain_until_done(&mut conversation, |event, _| assert!(!matches!(event, AgentEvent::Error { .. }), "{event:?}"));
+            assert!(started.elapsed() < Duration::from_secs(1), "Stop must interrupt a silent API connection");
+            assert!(!conversation.is_busy());
+            assert!(events.iter().any(|event| matches!(event, AgentEvent::Status { text } if text == "Stopped.")));
+            disconnected.recv_timeout(Duration::from_secs(1)).unwrap();
+            conversation.send("next message");
+            drain_until_done(&mut conversation, |event, _| assert!(!matches!(event, AgentEvent::Error { .. }), "{event:?}"));
+            assert!(!conversation.is_busy());
+            server.join().unwrap();
+        }
+    }
+
+    #[test]
+    fn stop_api_waiting_for_first_response_byte() {
+        api_stop_fixture(false);
+    }
+
+    #[test]
+    fn stop_api_waiting_in_a_partial_sse_event() {
+        api_stop_fixture(true);
+    }
+
+    #[test]
+    fn stop_before_api_worker_starts_is_preserved() {
+        let host = Arc::new(FakeHost { calls: Mutex::default(), journal: Mutex::default() });
+        let seen = Arc::new(Mutex::default());
+        let script = Scripted { turns: VecDeque::from([turn(vec![Block::Text { text: "next answer".into() }], StopReason::EndTurn)]), seen: seen.clone() };
+        let (events, _received) = std::sync::mpsc::channel();
+        let mut agent = AgentLoop {
+            host,
+            chain: vec![ModelSlot { name: "Fixture".into(), model: Box::new(script), local: true, effort: None, max_turns: 2, context_tokens: 0 }],
+            current: 0,
+            history: Vec::new(),
+            system: None,
+            enabled: BTreeSet::from([Toolset::Core]),
+            cfg: LoopConfig::default(),
+            events,
+            waiters: Arc::default(),
+            stop: Stop::default(),
+            cancel: Arc::new(Mutex::new(CancelToken::default())),
+            meter: Meter::default(),
+            last_input: 0,
+            last_history_estimate: 0,
+            failure: Arc::default(),
+            failed_builds: 0,
+            server_windows: BTreeMap::new(),
+        };
+        agent.stop.stop();
+        let done = agent.handle_turn(Some("cancel before dequeue"));
+        assert!(matches!(done, AgentEvent::TurnDone { .. }));
+        assert!(seen.lock().unwrap().is_empty(), "a worker cannot revive a cancelled request");
+        agent.handle("next message");
+        assert_eq!(seen.lock().unwrap().len(), 1, "a new turn resets Stop");
     }
 
     #[test]

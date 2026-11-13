@@ -39,6 +39,8 @@ pub mod settings_ui;
 pub mod sidebar;
 pub mod slash;
 pub mod state;
+#[cfg(target_os = "windows")]
+mod system_fonts;
 pub mod theme;
 pub mod titlebar;
 pub mod usage;
@@ -582,6 +584,9 @@ pub struct CraftApp {
     /// Jobs whose result goes into the conversation (a first look, an answer without an AI):
     /// what the Ask screen waits on and its Stop cancels.
     chat_jobs: Vec<u64>,
+    /// Stop was pressed for this answer; keep feedback visible until its worker ends.
+    chat_stopping: bool,
+    chat_stop_waits_for_turn: bool,
     view_dirty: bool,
     last_view: Option<Instant>,
     applied_theme: Option<(ThemeKind, bool)>,
@@ -672,6 +677,8 @@ impl CraftApp {
             saving: None,
             creating: None,
             chat_jobs: Vec::new(),
+            chat_stopping: false,
+            chat_stop_waits_for_turn: false,
             asking: Default::default(),
             pausing: Default::default(),
             pending_consent: Default::default(),
@@ -1357,6 +1364,8 @@ impl CraftApp {
         if text.is_empty() {
             return;
         }
+        self.chat_stopping = false;
+        self.chat_stop_waits_for_turn = false;
         self.state.chat.push(ChatItem::User(text.clone()));
         if self.state.backend.is_some() {
             // Each message to this AI is a choice too: an AI that finishes connecting meanwhile
@@ -1397,6 +1406,11 @@ impl CraftApp {
     /// Stop the answer being worked on: the AI's, and tools working for the conversation. Builds,
     /// downloads and other jobs carry on.
     pub fn stop(&mut self) {
+        if self.chat_stopping {
+            return;
+        }
+        self.chat_stopping = self.answering();
+        self.chat_stop_waits_for_turn = self.conversation.as_ref().is_some_and(|c| c.is_busy());
         if let Some(c) = self.conversation.as_mut() {
             c.stop();
         }
@@ -1421,6 +1435,11 @@ impl CraftApp {
             return;
         }
         for e in events {
+            if self.chat_stopping && matches!(e, AgentEvent::TurnDone { .. }) {
+                chat::finish_stopped(&mut self.state.chat);
+                self.chat_stopping = false;
+                self.chat_stop_waits_for_turn = false;
+            }
             chat::apply_event(&mut self.state.chat, e.clone());
             match e {
                 AgentEvent::ToolFinished { .. } => self.view_dirty = true,
@@ -1877,6 +1896,12 @@ impl CraftApp {
             ctx.open_url(egui::OpenUrl::new_tab(url));
         }
         guard("conversation", || self.poll_conversation());
+        if !self.chat_stop_waits_for_turn && !self.answering() {
+            if self.chat_stopping {
+                chat::finish_stopped(&mut self.state.chat);
+            }
+            self.chat_stopping = false;
+        }
         guard("rebuild", || self.poll_run());
         guard("pins", || self.poll_pins(ctx));
         // Back from another window: projects may have been added, moved or removed meanwhile.

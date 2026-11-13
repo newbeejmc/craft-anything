@@ -3057,6 +3057,82 @@ fn the_ask_screen_waits_only_for_its_own_answer() {
 }
 
 #[test]
+fn stop_immediately_shows_feedback_until_the_agent_has_ended() {
+    use craft_anything_ai::{AgentEvent, Conversation};
+    use std::sync::{
+        Arc,
+        atomic::{AtomicBool, AtomicUsize, Ordering},
+    };
+
+    struct Agent {
+        running: Arc<AtomicBool>,
+        stops: Arc<AtomicUsize>,
+        done: bool,
+        idle_seen: bool,
+    }
+    impl Conversation for Agent {
+        fn send(&mut self, _text: &str) {
+            self.running.store(true, Ordering::SeqCst);
+            self.done = false;
+            self.idle_seen = false;
+        }
+        fn poll(&mut self) -> Vec<AgentEvent> {
+            if !self.is_busy() && !self.done {
+                // Workers can become idle just after the UI drains their event channel.
+                if !std::mem::replace(&mut self.idle_seen, true) {
+                    return Vec::new();
+                }
+                self.done = true;
+                vec![AgentEvent::TurnDone { backend: "Test".into(), input_tokens: 0, output_tokens: 0, cost_usd: None, cost_is_estimate: false }]
+            } else {
+                Vec::new()
+            }
+        }
+        fn answer_consent(&mut self, _id: &str, _allow: bool) {}
+        fn stop(&mut self) {
+            self.stops.fetch_add(1, Ordering::SeqCst);
+        }
+        fn is_busy(&self) -> bool {
+            self.running.load(Ordering::SeqCst)
+        }
+    }
+    let running = Arc::new(AtomicBool::new(true));
+    let stops = Arc::new(AtomicUsize::new(0));
+    let agent = Agent { running: running.clone(), stops: stops.clone(), done: false, idle_seen: false };
+    let mut h = harness(move || {
+        let mut app = demo::app(demo::engine(Mode::Beginner, true));
+        app.state.screen = Screen::Ask;
+        app.conversation = Some(Box::new(agent));
+        app.state.input = "keep this draft".into();
+        app.state.chat = vec![
+            ChatItem::User("run a task".into()),
+            ChatItem::Tool { call_id: "running".into(), tool: "run".into(), ok: None, summary: String::new(), evidence_id: None, evidence: None },
+            ChatItem::Consent { call_id: "approval".into(), tool: "run".into(), title: "Run it".into(), explanation: "Needs approval".into(), answer: None },
+        ];
+        app
+    });
+    h.run_steps(2);
+    h.get_by_label("Stop").click();
+    h.run_steps(2);
+    assert_eq!(stops.load(Ordering::SeqCst), 1);
+    h.get_by_label("Stopping…").click();
+    h.run_steps(2);
+    assert_eq!(stops.load(Ordering::SeqCst), 1, "Stop is idempotent while cleanup finishes");
+    assert_eq!(h.state().state.input, "keep this draft");
+    running.store(false, Ordering::SeqCst);
+    h.run_steps(3);
+    assert!(!h.state().answering());
+    assert!(h.query_by_label("Stopping…").is_none());
+    assert!(matches!(&h.state().state.chat[1], ChatItem::Tool { ok: Some(false), .. }));
+    assert!(matches!(&h.state().state.chat[2], ChatItem::Consent { answer: Some(craft_anything_ui_egui::state::ConsentAnswer::Deny), .. }));
+    h.get_by_label("Send (Enter)").click();
+    h.run_steps(2);
+    assert!(running.load(Ordering::SeqCst), "a new message can start after termination");
+    h.get_by_label("Stop");
+    running.store(false, Ordering::SeqCst);
+}
+
+#[test]
 fn closing_the_ghidra_question_means_the_project_doesnt_start_later() {
     use craft_anything_ui_egui::state::Modal;
     let mut h = harness(|| {

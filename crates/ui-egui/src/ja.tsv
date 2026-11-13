@@ -492,6 +492,7 @@ Paste your {name} key	{name} のキーを貼り付け
 Path	パス
 Pause	一時停止
 Pausing…	一時停止しています…
+Stopping…	停止しています…
 Pause the build first, then delete the project.	先にビルドを一時停止してから、プロジェクトを削除してください。
 Pause the build first.	先にビルドを一時停止してください。
 Paused	一時停止

@@ -1203,6 +1203,15 @@ Owner: maintainers · Status: in progress
 ### R2.9 Everyday use: typing, projects, settings
 Owner: maintainers · Status: in progress
 Gaps found while using the app for real projects.
+- [x] Make Stop interrupt a running agent promptly, including a shared-investigation refresh
+      or an agent that ignores its protocol cancellation. Add cancellation regressions.
+      — claimed: Codex, branch bugfix/r2.9-agent-stop
+- [x] Make API-model HTTP waits cancellable before the first response byte and between SSE
+      events; preserve an early Stop queued before its worker starts the turn.
+      — claimed: Codex, branch bugfix/r2.9-agent-stop
+- [x] Windows source builds without craft-fonts show Chinese text as boxes. Load a validated,
+      bounded system-font fallback on a worker thread for every UI font family.
+      — claimed: Codex, branch bugfix/r2.9-windows-cjk-fallback
 - [x] Each project chooses, per kind of action, what the builder's approvals get (allow, ask or
       refuse): reading the web, commands, files outside the project, pushing and publishing,
       deleting outside the project, system changes, other tools. Unset kinds follow Auto mode as

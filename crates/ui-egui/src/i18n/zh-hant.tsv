@@ -827,6 +827,7 @@ Paste your {name} key	貼上你的 {name} 金鑰
 Path	路徑
 Pause	暫停
 Pausing…	正在暫停…
+Stopping…	正在停止…
 Pause the build first, then delete the project.	請先暫停建置，再刪除專案。
 Pause the build first.	請先暫停建置。
 Paused	已暫停

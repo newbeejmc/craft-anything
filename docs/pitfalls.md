@@ -245,6 +245,21 @@ the program it opened stayed open (and held the shell's pipe, so the command nev
 the caller may exit next, use `kill_and_wait`, and check after a live run that nothing was left
 running.
 
+**Stop queued behind a session lock.** A shared chat worker waited for the engine session while
+refreshing a tool result, so its queued Stop could not reach the running agent. Preparation and
+refresh must yield when the session is busy, and terminal events must not wait for that refresh.
+An ACP cancellation notification is also only a request: an unresponsive agent may never
+acknowledge it. Stop the owned process, report completion only after it ends, and keep callbacks
+from that process separate from the next session.
+
+**Stop cannot wait for another response chunk.** Checking cancellation only inside an SSE
+callback leaves a silent server's first-byte wait, partial event or TLS handshake blocked.
+Close the actual socket when stopped, keep DNS/connect waits cancellable, and normalize the
+result as cancellation before applying network-error retries. Reset Stop before enqueueing a
+new message, never on its worker: a fast click can otherwise be erased before the request runs.
+Do not use `io::ErrorKind::Interrupted` for requested cancellation: buffered I/O and TLS may
+retry it forever. Use a final connection error and check Stop before classifying the failure.
+
 **A turn's own process outlived its answer.** `run_cli` only sent `AgentEvent::TurnDone` once the
 whole coding-agent subprocess exited, never once its JSON stream said the turn was done (the
 `result` line). Claude Code can print that line and then linger (its own shutdown hook, logging)
@@ -498,6 +513,11 @@ private every CI job is skipped, so nothing had been checked. Read the checks' c
 merge state. Without CI, run its steps locally with `--locked`; a Mac can compile for the other
 systems with `cargo check --target`, with zig as the C compiler for `ring` (a wrapper that drops the
 `--target=` flag `cc` adds), but that only proves it compiles.
+
+**Chinese boxes mistaken for broken encoding.** A valid UTF-8 checkout can still show boxes
+when a source build embeds no CJK fonts. Check the file bytes and font table before transcoding
+anything. Verify glyph coverage in every text family with the package's font test and snapshot
+example; Cargo preserves the native-library and LTO settings that ad-hoc linking can miss.
 
 **A "required" switch read only on the failure path.** The build script looked at
 `CRAFT_FONTS_REQUIRED` only when `CRAFT_FONTS_DIR` was set and bad; with the folder variable

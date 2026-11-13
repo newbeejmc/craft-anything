@@ -319,15 +319,18 @@ impl StreamState {
 
 impl ChatModel for Anthropic {
     fn turn(&mut self, req: &TurnRequest<'_>, on_delta: &mut dyn FnMut(Delta), stop: &Stop) -> Result<TurnResult, ToolError> {
-        let agent = http::stream_agent(self.stream_limit);
-        let reader = http::post_json(&agent, "Anthropic", &self.url("messages"), &self.headers(), &self.body(req))?;
+        let agent = http::stream_agent_with_stop(self.stream_limit, stop)?;
+        let response = http::post_json(&agent, "Anthropic", &self.url("messages"), &self.headers(), &self.body(req));
+        stop.check()?;
+        let reader = response?;
         let mut state = StreamState::default();
-        http::parse_sse(reader, |ev| {
+        let parsed = http::parse_sse(reader, |ev| {
             stop.check()?;
             state.apply(&ev, on_delta)?;
             Ok(!state.done)
-        })?;
+        });
         stop.check()?;
+        parsed?;
         state.finish(&self.model)
     }
 
